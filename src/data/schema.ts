@@ -101,18 +101,7 @@ export const surveySchema: SurveySchema = {
           required: true,
           explanation: 'Choose the role that fits you best. If “Other,” provide details inline.',
         },
-        {
-          id: 'seniority',
-          type: 'multiple_choice',
-          label: 'Seniority / decision influence',
-          options: [
-            { id: 'daily_user', label: 'Daily user, no purchase influence' },
-            { id: 'team_lead', label: 'Team lead, influences tool selection' },
-            { id: 'dept_head', label: 'Department head, approves budgets' },
-            { id: 'executive', label: 'Executive, final decision maker' },
-          ],
-          required: true,
-        },
+        
         {
           id: 'licenses_count',
           type: 'multiple_choice',
@@ -125,7 +114,7 @@ export const surveySchema: SurveySchema = {
           ],
           required: true,
         },
-        { id: 'active_users', type: 'text', label: 'Number of active users', explanation: 'Enter a number.', required: true },
+        
       ],
     },
     {
@@ -137,7 +126,7 @@ export const surveySchema: SurveySchema = {
         {
           id: 'time_spent',
           type: 'multiple_choice',
-          label: 'Roughly how much time do you spend in CRM each working day?',
+          label: 'How much time do you spend in the CRM each workday?',
           options: [
             { id: 'lt_30', label: '< 30 min' },
             { id: '30_60', label: '30–60 min' },
@@ -146,12 +135,12 @@ export const surveySchema: SurveySchema = {
           ],
           required: true,
         },
-        { id: 'top_metrics', type: 'long_text', label: 'What are the top metrics you track daily in CRM? (list your top 3)', explanation: 'e.g., Total pipeline value; Total deals; Status of companies', required: true },
+        { id: 'top_metrics', type: 'long_text', label: 'What are the top things you check daily?', explanation: 'Use the i-icon for examples relevant to your role.', required: true },
         {
           id: 'start_of_day',
           type: 'long_text',
-          label: 'Describe a typical “start-of-day” workflow in CRM',
-          explanation: 'What tabs, lists, or reports do you check first?',
+          label: 'Describe your typical start of day in the CRM',
+          explanation: 'Which tab, list, or report do you open first? What do you scan next? What do you act on?',
           hint: 'Sample: I open the Deals board to review stuck deals, check the “New leads” list, scan yesterday’s emails on Contact timelines, and glance at the “Meetings this week” dashboard.',
           required: true,
         },
@@ -187,7 +176,7 @@ export const surveySchema: SurveySchema = {
         {
           id: 'hate_to_lose',
           type: 'long_text',
-          label: 'Which single CRM feature would you hate to lose? Why?',
+          label: 'Which single CRM feature gives you immense joy to use? Why?',
         },
       ],
     },
@@ -200,7 +189,7 @@ export const surveySchema: SurveySchema = {
         {
           id: 'manual_tasks',
           type: 'multi_select',
-          label: 'What tasks inside CRM feel repetitive or time-consuming enough that you still do them manually? (check all that apply)',
+          label: 'Which tasks still feel manual or time-consuming? (check all that apply)',
           options: [
             { id: 'contact_research', label: 'Contact/Lead research' },
             { id: 'ice_breakers', label: 'Writing personalized ice-breaker emails' },
@@ -220,6 +209,7 @@ export const surveySchema: SurveySchema = {
           id: 'recent_scenario',
           type: 'long_text',
           label: 'Describe one recent scenario where CRM got in your way OR required extra steps.',
+          hint: 'Example: “Updating close dates requires editing each deal separately; no bulk update; took 20 minutes for 12 deals.” Include where it happened and the extra steps you did.',
           required: true,
         },
       ],
@@ -247,8 +237,8 @@ export const surveySchema: SurveySchema = {
           ],
           required: true,
         },
-        { id: 'most_valuable_integration', type: 'long_text', label: 'Which integration do you think is the most valuable', required: true },
-        { id: 'crm_love', type: 'long_text', label: 'What do you really love about your CRM? Something that you can’t live without', required: true },
+        { id: 'most_valuable_integration', type: 'long_text', label: 'Which integration is the most valuable, and why?', hint: 'Give a concrete example of how it helps. e.g., “Gmail — auto‑logs emails to contacts; saves manual logging; faster follow‑ups.” Mention the key workflow it improves.', required: true },
+        { id: 'crm_love', type: 'long_text', label: 'What do you really love about your CRM?', required: true },
       ],
     },
     {

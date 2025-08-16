@@ -16,7 +16,13 @@ export default function SurveyPage() {
   const [ratingPage, setRatingPage] = useState(0);
   const [showIntro, setShowIntro] = useState(true);
   const [gists, setGists] = useState<{ [id: string]: { gist: string; hint: string } }>({});
+  const [errorsByQuestionId, setErrorsByQuestionId] = useState<Record<string, string[]>>({});
+  const [ackText, setAckText] = useState('');
   const sections = surveySchema.sections;
+  const [examplesByQuestionId, setExamplesByQuestionId] = useState<Record<string, string[]>>({});
+  const [descriptionsByQuestionId, setDescriptionsByQuestionId] = useState<Record<string, Record<string, string>>>({});
+  const [hoverTip, setHoverTip] = useState<{ id: string; text: string } | null>(null);
+  const [submitStatus, setSubmitStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
 
   function computeProgressPercent() {
     // Count total prompts across all sections (questions + rating items)
@@ -51,6 +57,85 @@ export default function SurveyPage() {
 
     if (total === 0) return 0;
     return Math.min(100, Math.max(0, Math.round((visited / total) * 100)));
+  }
+
+  function getTopMetricsHint(roleId?: string): string {
+    // Fetch from LLM examples endpoint synchronously is not possible here; provide cached string if already fetched via state (set elsewhere)
+    return examplesByQuestionId['top_metrics']?.join('; ') || 'Loading examples…';
+  }
+
+  useEffect(() => {
+    async function ensureExamples() {
+      if (!examplesByQuestionId['top_metrics']) {
+        try {
+          const res = await fetch('/api/ai/examples', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ questionId: 'top_metrics', roleId: answers['primary_role'] as string | undefined }),
+          });
+          const data = await res.json();
+          setExamplesByQuestionId(prev => ({ ...prev, top_metrics: data.examples || [] }));
+        } catch {}
+      }
+    }
+    ensureExamples();
+  }, [answers['primary_role']]);
+
+  useEffect(() => {
+    // Fetch short descriptions for manual tasks options
+    async function ensureDescriptions() {
+      const sec = sections.find(s => 'questions' in s && (s as Section).questions.some(q => q.id === 'manual_tasks')) as Section | undefined;
+      if (!sec) return;
+      if (descriptionsByQuestionId['manual_tasks']) return;
+      const q = sec.questions.find(q => q.id === 'manual_tasks');
+      if (!q) return;
+      try {
+        const res = await fetch('/api/ai/describe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ questionId: 'manual_tasks', options: q.options || [] }),
+        });
+        const data = await res.json();
+        const got: Record<string, string> = data.descriptions || {};
+        // Fallbacks if model returns empty strings
+        const fallback: Record<string, string> = {
+          'Contact/Lead research': 'Finding contact info and context manually',
+          'Writing personalized ice-breaker emails': 'Crafting tailored first emails by hand',
+          'Logging calls or meeting notes': 'Typing call summaries into the CRM',
+          'Updating deal stages / close dates': 'Manually moving deals and changing dates',
+          'Building or editing reports': 'Creating dashboards and tweaking filters',
+          'Importing data from LinkedIn or other tools': 'Copying data between tools into CRM',
+          'Preparing pre-meeting summaries': 'Compiling account highlights before meetings',
+          'Adding email summaries in CRM': 'Pasting email recaps into records',
+          'Maintaining data quality': 'Fixing duplicates and missing fields',
+          'Integrating campaign data to leads/contacts': 'Linking campaign touchpoints to people',
+          'Other (specify)': 'Another manual task not listed',
+        };
+        const merged: Record<string, string> = {};
+        (q.options || []).forEach(o => {
+          const v = got[o.label];
+          merged[o.label] = (v && v.trim().length > 0 ? v : fallback[o.label]) || '';
+        });
+        setDescriptionsByQuestionId(prev => ({ ...prev, manual_tasks: merged }));
+      } catch {}
+    }
+    ensureDescriptions();
+  }, [sections, descriptionsByQuestionId]);
+
+  function getContextPrefix(q: Section['questions'][number]): string | undefined {
+    const nps = answers['nps'] as number | undefined;
+    if (q.id === 'current_crm' && typeof nps === 'number') {
+      if (nps >= 9) {
+        return 'Wow! Such love for a CRM is unheard of. Would love to know more in subsequent questions.';
+      }
+      if (nps <= 3) {
+        return 'Got it — sounds painful. Let’s first confirm which CRM you’re using.';
+      }
+      if (nps <= 6) {
+        return 'Noted — some friction there. Which CRM are you on right now?';
+      }
+    }
+    return undefined;
   }
 
   useEffect(() => {
@@ -104,7 +189,184 @@ export default function SurveyPage() {
     } catch {}
   }
 
+  function getOptionLabel(section: Section['questions'][number], id: string | undefined): string | undefined {
+    if (!id) return undefined;
+    const opt = (section.options || []).find(o => o.id === id);
+    return opt?.label;
+  }
+
+  function buildAck(q: Section['questions'][number], value: unknown): string {
+    if (q.type === 'multiple_choice') {
+      const label = getOptionLabel(q, String(value || ''));
+      return label ? `Got it — ${label}.` : 'Got it.';
+    }
+    if (q.type === 'scale') {
+      return typeof value === 'number' ? `Thanks — noted ${value}.` : 'Thanks.';
+    }
+    if (q.type === 'multi_select') {
+      const selected = Array.isArray(value) ? value.length : 0;
+      return selected > 0 ? `Thanks — ${selected} selected.` : 'Thanks.';
+    }
+    return 'Thanks for the details.';
+  }
+
+  async function validateCurrentQuestion(): Promise<boolean> {
+    if (!('questions' in activeSection)) return true;
+    const q = (activeSection as Section).questions[activeQuestionIndex];
+    const val = answers[q.id];
+
+    // Numeric-only question: allow simple numeric input without AI validation
+    if (q.id === 'active_users') {
+      const num = typeof val === 'string' ? Number(val) : (typeof val === 'number' ? val : NaN);
+      if (!Number.isFinite(num) || num < 0) {
+        setErrorsByQuestionId(prev => ({ ...prev, [q.id]: ['Enter a valid non‑negative number.'] }));
+        return false;
+      }
+      return true;
+    }
+
+    // Allow explicit skip phrases
+    const SKIP_PHRASES = ['skip', 'no comment', "don't know", 'na', 'n/a'];
+    if ((q.type === 'text' || q.type === 'long_text') && typeof val === 'string') {
+      const lower = val.trim().toLowerCase();
+      if (SKIP_PHRASES.includes(lower)) {
+        setErrorsByQuestionId(prev => ({ ...prev, [q.id]: [] }));
+        setAckText('No problem — we can skip this one.');
+        return true;
+      }
+    }
+
+    // Required checks (still required to select something for choice/scale)
+    if (q.required) {
+      if (q.type === 'multi_select') {
+        if (!Array.isArray(val) || val.length === 0) {
+          setErrorsByQuestionId(prev => ({ ...prev, [q.id]: ['Please choose at least one.'] }));
+          return false;
+        }
+      } else if (q.type === 'multiple_choice' || q.type === 'scale') {
+        if (val === undefined || val === null || val === '') {
+          setErrorsByQuestionId(prev => ({ ...prev, [q.id]: ['Please select an option.'] }));
+          return false;
+        }
+      }
+    }
+
+    // Lenient open-text checks
+    if (q.type === 'text' || q.type === 'long_text') {
+      const text = typeof val === 'string' ? val : '';
+      const jibberish = /^(?:[a-z]{1,2}\s*){1,6}$/i.test(text.trim());
+      if (text.trim().length === 0 || jibberish) {
+        setErrorsByQuestionId(prev => ({ ...prev, [q.id]: ['This looks too vague. Please add details, or type "skip" to continue.'] }));
+        return false;
+      }
+      if (q.id === 'top_metrics') {
+        const parts = text.split(/[;,\n,]/).map(s => s.trim()).filter(Boolean);
+        if (parts.length < 2) {
+          setErrorsByQuestionId(prev => ({
+            ...prev,
+            [q.id]: ['Please list at least two items separated by comma/semicolon/newline, or type "skip" to continue.'],
+          }));
+          return false;
+        }
+      }
+      try {
+        const res = await fetch('/api/ai/validate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fieldId: q.id, text }),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          // Show suggestions; allow skipping on next click
+          try {
+            const f = await fetch('/api/ai/followup', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ question: q.label, answer: text }),
+            });
+            const fj = await f.json();
+            setErrorsByQuestionId(prev => ({ ...prev, [q.id]: [...(prev[q.id] || []), `Follow-up: ${fj.followup}`] }));
+          } catch {}
+          setErrorsByQuestionId(prev => ({ ...prev, [q.id]: data.reasons || ['Please add more details, or type "skip" to continue.'] }));
+          return false;
+        }
+      } catch {}
+    }
+
+    setAckText(buildAck(q, val));
+    return true;
+  }
+
+  async function handleNext() {
+    const isRatings = 'type' in activeSection && (activeSection as RatingGroupSection).type === 'rating_group';
+    const isQuestions = 'questions' in activeSection;
+    const isLastSection = activeSectionIndex >= totalSections - 1;
+
+    // rating pagination
+    if (isRatings) {
+      const rg = activeSection as RatingGroupSection;
+      const totalPages = Math.ceil(rg.items.length / 5);
+      if (ratingPage < totalPages - 1) {
+        setRatingPage(p => p + 1);
+        return;
+      }
+      // advance to next section
+      if (isLastSection) {
+        await handleSubmit();
+        return;
+      } else {
+        setActiveSectionIndex(i => Math.min(totalSections - 1, i + 1));
+        setActiveQuestionIndex(0);
+        setRatingPage(0);
+        return;
+      }
+    }
+
+    // Special table flow: 'invisible_crm' renders all questions at once → advance section in one click
+    if (isQuestions && (activeSection as { id: string }).id === 'invisible_crm') {
+      if (isLastSection) {
+        await handleSubmit();
+        return;
+      } else {
+        setActiveSectionIndex(i => Math.min(totalSections - 1, i + 1));
+        setActiveQuestionIndex(0);
+        setRatingPage(0);
+        return;
+      }
+    }
+
+    // question progression with validation
+    if (isQuestions) {
+      const ok = await validateCurrentQuestion();
+      if (!ok) return;
+      const moreQuestions = activeQuestionIndex < (activeSection as Section).questions.length - 1;
+      if (moreQuestions) {
+        setActiveQuestionIndex(i => i + 1);
+        return;
+      }
+      // move to next section
+      if (isLastSection) {
+        await handleSubmit();
+        return;
+      } else {
+        setActiveSectionIndex(i => Math.min(totalSections - 1, i + 1));
+        setActiveQuestionIndex(0);
+        setRatingPage(0);
+        return;
+      }
+    }
+  }
+
   async function handleSubmit() {
+    if (submitStatus === 'saving') return;
+    setSubmitStatus('saving');
+    // Basic client-side checks so users get clear feedback
+    const emailOk = /.+@.+/.test(String(email || ''));
+    if (!name || !emailOk) {
+      setSubmitStatus('error');
+      alert(!name ? 'Please enter your name on the first screen.' : 'Please enter a valid email address on the first screen.');
+      return;
+    }
     const payload = {
       name,
       email,
@@ -119,8 +381,29 @@ export default function SurveyPage() {
       body: JSON.stringify(payload),
     });
     if (res.ok) {
+      const json = await res.json();
       localStorage.removeItem('survey-progress');
-      window.location.href = '/thanks';
+      setSubmitStatus('saved');
+      if (json.warning) {
+        // transiently show warning, then redirect
+        alert(json.warning as string);
+      }
+      try {
+        if (typeof window !== 'undefined' && json?.saved?.id) {
+          sessionStorage.setItem('survey-submitted', String(json.saved.id));
+        }
+      } catch {}
+      setTimeout(() => {
+        window.location.href = '/thanks';
+      }, 500);
+    } else {
+      try {
+        const err = await res.json();
+        setSubmitStatus('error');
+        alert(typeof err?.error === 'string' ? err.error : 'Submit failed.');
+      } catch {
+        setSubmitStatus('error');
+      }
     }
   }
 
@@ -169,11 +452,16 @@ export default function SurveyPage() {
                   const visible = rg.items.slice(start, end);
                   return (
                     <>
+                      {ratingPage === 0 && (
+                        <div className="rounded border p-3 bg-gray-50 text-sm text-gray-700 mb-2">
+                          We’re moving to the next section: features you value. Please rate each feature from 1–5. Choose 1 if you haven’t heard of it or don’t use it; 5 if it’s mission‑critical.
+                        </div>
+                      )}
                       {visible.map(item => (
                         <label key={item.id} className="flex items-center gap-3">
-                          <div className="w-48">{item.label}</div>
+                          <div className="w-48" title={('description' in item ? (item as { description?: string }).description : undefined) || undefined}>{item.label}</div>
                           <div className="flex gap-1">
-                            {Array.from({ length: rg.scaleMax }).map((_, i) => (
+                            {Array.from({ length: (activeSection as RatingGroupSection).scaleMax }).map((_, i) => (
                               <button
                                 key={i}
                                 className={`h-8 w-8 rounded border ${ratings[item.id] === i + 1 ? 'bg-black text-white' : ''}`}
@@ -195,6 +483,9 @@ export default function SurveyPage() {
             )}
             {'questions' in activeSection && (
               <div className="border rounded p-3">
+                {ackText && (
+                  <div className="text-sm text-gray-700 italic mb-2">{ackText}</div>
+                )}
                 {(() => {
                   const currentSection = activeSection as Section;
                   const q = currentSection.questions[activeQuestionIndex] as Section['questions'][number];
@@ -245,9 +536,51 @@ export default function SurveyPage() {
                   if (!q) return null;
                   return (
                     <div>
-                      <div className="font-medium">{q.label}</div>
+                      <div className="font-medium flex items-center gap-2 relative">
+                        <span title={q.id === 'top_metrics' ? getTopMetricsHint(answers['primary_role'] as string | undefined) : undefined}>{q.label}</span>
+                        {(q.hint || q.id === 'top_metrics') ? (
+                          <span
+                            className="h-5 w-5 inline-flex items-center justify-center rounded-full border text-xs bg-white text-gray-700 cursor-help select-none"
+                            onMouseEnter={() => setHoverTip({ id: q.id, text: q.id === 'top_metrics' ? getTopMetricsHint(answers['primary_role'] as string | undefined) : (q.hint as string) })}
+                            onMouseLeave={() => setHoverTip(t => (t?.id === q.id ? null : t))}
+                          >
+                            i
+                          </span>
+                        ) : null}
+                        {hoverTip?.id === q.id && (
+                          <div role="tooltip" className="absolute top-full left-0 mt-1 z-10 rounded border bg-white text-xs p-2 shadow max-w-xs">
+                            {hoverTip.text}
+                          </div>
+                        )}
+                      </div>
+                      {(() => {
+                        const prefix = getContextPrefix(q);
+                        return prefix ? (
+                          <p className="text-sm text-gray-700 italic mt-1">{prefix}</p>
+                        ) : null;
+                      })()}
                       {q.explanation && (
                         <p className="text-sm text-gray-600 mt-1">{q.explanation}</p>
+                      )}
+                      {errorsByQuestionId[q.id] && errorsByQuestionId[q.id].length > 0 && (
+                        <div className="mt-2 text-xs text-red-600">
+                          {errorsByQuestionId[q.id].map((e, idx) => (
+                            <div key={idx}>• {e}</div>
+                          ))}
+                        </div>
+                      )}
+                      {(q.hint || q.id === 'top_metrics') && errorsByQuestionId[q.id] && errorsByQuestionId[q.id].length > 0 && (
+                        <div className="mt-2 text-xs text-gray-700 border rounded p-2 bg-gray-50">
+                          <div className="font-medium mb-1">Sample:</div>
+                          <div>{q.id === 'top_metrics' ? getTopMetricsHint(answers['primary_role'] as string | undefined) : q.hint}</div>
+                          {q.id === 'top_metrics' && examplesByQuestionId['top_metrics'] && (
+                            <ul className="mt-1 list-disc ml-4">
+                              {examplesByQuestionId['top_metrics'].map((ex, i) => (
+                                <li key={i}>{ex}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
                       )}
                       {q.type === 'multiple_choice' && (
                         <div className="mt-2 grid gap-2">
@@ -316,7 +649,7 @@ export default function SurveyPage() {
                                     setAnswer(q.id, next);
                                   }}
                                 />
-                                <span>{opt.label}</span>
+                                <span title={q.id === 'manual_tasks' ? (descriptionsByQuestionId['manual_tasks']?.[opt.label] || undefined) : undefined}>{opt.label}</span>
                               </label>
                             );
                           })}
@@ -354,6 +687,13 @@ export default function SurveyPage() {
                     return;
                   }
                 }
+                if ('questions' in activeSection && (activeSection as { id: string }).id === 'invisible_crm') {
+                  // Table flow: go straight to previous section
+                  setActiveSectionIndex(i => Math.max(0, i - 1));
+                  setActiveQuestionIndex(0);
+                  setRatingPage(0);
+                  return;
+                }
                 if ('questions' in activeSection && activeQuestionIndex > 0) {
                   setActiveQuestionIndex(i => i - 1);
                   return;
@@ -371,39 +711,26 @@ export default function SurveyPage() {
             {(() => {
               const isRatings = 'type' in activeSection && (activeSection as RatingGroupSection).type === 'rating_group';
               const isQuestions = 'questions' in activeSection;
-              const moreRatings = isRatings && (() => {
-                const rg = activeSection as RatingGroupSection;
-                const totalPages = Math.ceil(rg.items.length / 5);
-                return ratingPage < totalPages - 1;
-              })();
+              const moreRatings = false; // handled in handleNext
               const moreQuestions = isQuestions && activeQuestionIndex < (activeSection as Section).questions.length - 1;
-              const moreInSection = moreRatings || moreQuestions;
               const isLastSection = activeSectionIndex >= totalSections - 1;
-              if (moreInSection || !isLastSection) {
-                return (
-                  <button
-                    className="px-4 py-2 rounded bg-black text-white shadow"
-                    onClick={() => {
-                      if (isRatings && moreRatings) {
-                        setRatingPage(p => p + 1);
-                      } else if (isQuestions && moreQuestions) {
-                        setActiveQuestionIndex(i => i + 1);
-                      } else {
-                        setActiveSectionIndex(i => Math.min(totalSections - 1, i + 1));
-                        setActiveQuestionIndex(0);
-                        setRatingPage(0);
-                      }
-                    }}
-                    type="button"
-                  >
-                    Next
-                  </button>
-                );
-              }
               return (
-                <button className="px-4 py-2 rounded bg-black text-white shadow" onClick={handleSubmit} type="button">
-                  Submit
-                </button>
+                <div className="flex items-center gap-3">
+                  <button
+                    className="px-4 py-2 rounded bg-black text-white shadow disabled:opacity-60"
+                    onClick={moreRatings || moreQuestions || !isLastSection ? handleNext : handleSubmit}
+                    type="button"
+                    disabled={submitStatus === 'saving'}
+                  >
+                    {moreRatings || moreQuestions || !isLastSection ? 'Next' : submitStatus === 'saving' ? 'Submitting…' : 'Submit'}
+                  </button>
+                  {submitStatus === 'error' && (
+                    <span className="text-sm text-red-600">Couldn’t submit. Please try again.</span>
+                  )}
+                  {submitStatus === 'saved' && (
+                    <span className="text-sm text-green-700">Submitted! Redirecting…</span>
+                  )}
+                </div>
               );
             })()}
           </div>
