@@ -72,15 +72,14 @@ export async function POST(req: Request) {
   let result = await validateWithGoogle(text);
   if (!result) result = await validateWithOpenRouter(text);
   if (!result) {
+    // Pure LLM mode preferred; fallback heuristic should still catch very vague answers
+    const trimmed = (text || '').trim();
+    const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
+    const ok = trimmed.length >= 20 && wordCount >= 4;
     const reasons: string[] = [];
-    let ok = true;
-    if (!text || text.trim().length < 20) {
-      ok = false;
-      reasons.push('Too short. Please add more details (2–3 sentences).');
-    }
-    if (/^n\/?a$/i.test(text.trim())) {
-      ok = false;
-      reasons.push('Answer appears to be a placeholder (N/A).');
+    if (!ok) {
+      if (trimmed.length < 20) reasons.push('Too short. Add a sentence or two.');
+      if (wordCount < 4) reasons.push('Too few words. Add specifics (what, where, impact).');
     }
     result = { ok, reasons };
   }
