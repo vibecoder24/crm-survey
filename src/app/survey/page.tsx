@@ -23,6 +23,7 @@ export default function SurveyPage() {
   const [descriptionsByQuestionId, setDescriptionsByQuestionId] = useState<Record<string, Record<string, string>>>({});
   const [hoverTip, setHoverTip] = useState<{ id: string; text: string } | null>(null);
   const [submitStatus, setSubmitStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [warnedOnceByQuestionId, setWarnedOnceByQuestionId] = useState<Record<string, boolean>>({});
 
   function computeProgressPercent() {
     // Count total prompts across all sections (questions + rating items)
@@ -256,16 +257,25 @@ export default function SurveyPage() {
       const text = typeof val === 'string' ? val : '';
       const jibberish = /^(?:[a-z]{1,2}\s*){1,6}$/i.test(text.trim());
       if (text.trim().length === 0 || jibberish) {
-        setErrorsByQuestionId(prev => ({ ...prev, [q.id]: ['This looks too vague. Please add details, or type "skip" to continue.'] }));
+        if (warnedOnceByQuestionId[q.id]) {
+          // let them advance on second click
+          return true;
+        }
+        setErrorsByQuestionId(prev => ({ ...prev, [q.id]: ['This looks too vague. Add a sentence with specifics (what/where/impact), or press Next again to continue. You can always type "skip".'] }));
+        setWarnedOnceByQuestionId(prev => ({ ...prev, [q.id]: true }));
         return false;
       }
       if (q.id === 'top_metrics') {
         const parts = text.split(/[;,\n,]/).map(s => s.trim()).filter(Boolean);
         if (parts.length < 2) {
+          if (warnedOnceByQuestionId[q.id]) {
+            return true;
+          }
           setErrorsByQuestionId(prev => ({
             ...prev,
-            [q.id]: ['Please list at least two items separated by comma/semicolon/newline, or type "skip" to continue.'],
+            [q.id]: ['Tip: add another item (comma/semicolon/newline). Or press Next again to continue.'],
           }));
+          setWarnedOnceByQuestionId(prev => ({ ...prev, [q.id]: true }));
           return false;
         }
       }
@@ -287,7 +297,11 @@ export default function SurveyPage() {
             const fj = await f.json();
             setErrorsByQuestionId(prev => ({ ...prev, [q.id]: [...(prev[q.id] || []), `Follow-up: ${fj.followup}`] }));
           } catch {}
-          setErrorsByQuestionId(prev => ({ ...prev, [q.id]: data.reasons || ['Please add more details, or type "skip" to continue.'] }));
+          if (warnedOnceByQuestionId[q.id]) {
+            return true;
+          }
+          setErrorsByQuestionId(prev => ({ ...prev, [q.id]: data.reasons || ['This looks light. Add a bit more detail, or press Next again to continue.'] }));
+          setWarnedOnceByQuestionId(prev => ({ ...prev, [q.id]: true }));
           return false;
         }
       } catch {}
