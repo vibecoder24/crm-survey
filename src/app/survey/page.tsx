@@ -255,25 +255,27 @@ export default function SurveyPage() {
     // Lenient open-text checks
     if (q.type === 'text' || q.type === 'long_text') {
       const text = typeof val === 'string' ? val : '';
-      const jibberish = /^(?:[a-z]{1,2}\s*){1,6}$/i.test(text.trim());
-      if (text.trim().length === 0 || jibberish) {
-        if (warnedOnceByQuestionId[q.id]) {
-          // let them advance on second click
-          return true;
-        }
-        setErrorsByQuestionId(prev => ({ ...prev, [q.id]: ['This looks too vague. Add a sentence with specifics (what/where/impact), or press Next again to continue. You can always type "skip".'] }));
-        setWarnedOnceByQuestionId(prev => ({ ...prev, [q.id]: true }));
+      const trimmed = text.trim();
+      const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
+      const looksGibberish = /^(?:[a-z]{1,2}\s*){1,6}$/i.test(trimmed);
+      const isEmpty = trimmed.length === 0;
+      // Allow relevant one-word like “Leads” to pass; block empty/gibberish only
+      if (isEmpty || looksGibberish) {
+        setErrorsByQuestionId(prev => ({
+          ...prev,
+          [q.id]: ['This seems too brief to act on. A couple of details (what/where/impact) would help. You can also type "skip" to move on.'],
+        }));
         return false;
       }
       if (q.id === 'top_metrics') {
-        const parts = text.split(/[;,\n,]/).map(s => s.trim()).filter(Boolean);
+        const parts = trimmed.split(/[;,\n,]/).map(s => s.trim()).filter(Boolean);
         if (parts.length < 2) {
           if (warnedOnceByQuestionId[q.id]) {
             return true;
           }
           setErrorsByQuestionId(prev => ({
             ...prev,
-            [q.id]: ['Tip: add another item (comma/semicolon/newline). Or press Next again to continue.'],
+            [q.id]: ['Tip: add one more item (comma/semicolon/newline). If not handy, press Next again to continue.'],
           }));
           setWarnedOnceByQuestionId(prev => ({ ...prev, [q.id]: true }));
           return false;
@@ -287,7 +289,6 @@ export default function SurveyPage() {
         });
         const data = await res.json();
         if (!data.ok) {
-          // Show suggestions; allow skipping on next click
           try {
             const f = await fetch('/api/ai/followup', {
               method: 'POST',
@@ -295,12 +296,12 @@ export default function SurveyPage() {
               body: JSON.stringify({ question: q.label, answer: text }),
             });
             const fj = await f.json();
-            setErrorsByQuestionId(prev => ({ ...prev, [q.id]: [...(prev[q.id] || []), `Follow-up: ${fj.followup}`] }));
+            setErrorsByQuestionId(prev => ({ ...prev, [q.id]: [...(prev[q.id] || []), `Suggestion: ${fj.followup}`] }));
           } catch {}
           if (warnedOnceByQuestionId[q.id]) {
             return true;
           }
-          setErrorsByQuestionId(prev => ({ ...prev, [q.id]: data.reasons || ['This looks light. Add a bit more detail, or press Next again to continue.'] }));
+          setErrorsByQuestionId(prev => ({ ...prev, [q.id]: data.reasons || ['Consider adding one more sentence with a concrete example. You can also press Next again to continue.'] }));
           setWarnedOnceByQuestionId(prev => ({ ...prev, [q.id]: true }));
           return false;
         }

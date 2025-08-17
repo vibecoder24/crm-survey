@@ -72,15 +72,12 @@ export async function POST(req: Request) {
   let result = await validateWithGoogle(text);
   if (!result) result = await validateWithOpenRouter(text);
   if (!result) {
-    // Pure LLM mode preferred; fallback heuristic should still catch very vague answers
+    // Heuristic: block only empty/gibberish; otherwise advisory
     const trimmed = (text || '').trim();
     const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
-    const ok = trimmed.length >= 20 && wordCount >= 4;
-    const reasons: string[] = [];
-    if (!ok) {
-      if (trimmed.length < 20) reasons.push('Too short. Add a sentence or two.');
-      if (wordCount < 4) reasons.push('Too few words. Add specifics (what, where, impact).');
-    }
+    const looksGibberish = /^(?:[a-z]{1,2}\s*){1,6}$/i.test(trimmed);
+    const ok = !(trimmed.length === 0 || looksGibberish);
+    const reasons: string[] = ok ? [] : ['This seems too brief to act on. Add a couple of details (what/where/impact).'];
     result = { ok, reasons };
   }
   return NextResponse.json({ fieldId, ok: !!result.ok, reasons: result.reasons || [] });
