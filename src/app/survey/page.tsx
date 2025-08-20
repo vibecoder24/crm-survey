@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { surveySchema, type Section, type RatingGroupSection } from '@/data/schema';
 
 type Answers = { [id: string]: unknown };
@@ -15,7 +15,7 @@ export default function SurveyPage() {
   const [activeQuestionIndex, setActiveQuestionIndex] = useState(0);
   const [ratingPage, setRatingPage] = useState(0);
   const [showIntro, setShowIntro] = useState(true);
-  const [gists, setGists] = useState<{ [id: string]: { gist: string; hint: string } }>({});
+  // gists removed from UI to avoid unused state
   const [errorsByQuestionId, setErrorsByQuestionId] = useState<Record<string, string[]>>({});
   const [ackText, setAckText] = useState('');
   const sections = surveySchema.sections;
@@ -24,6 +24,18 @@ export default function SurveyPage() {
   const [hoverTip, setHoverTip] = useState<{ id: string; text: string } | null>(null);
   const [submitStatus, setSubmitStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [warnedOnceByQuestionId, setWarnedOnceByQuestionId] = useState<Record<string, boolean>>({});
+  const [isAdvancing, setIsAdvancing] = useState(false);
+  const [navHistory, setNavHistory] = useState<Array<{ s: number; q: number; r: number }>>([]);
+
+  const shouldSkipQuestion = useCallback((q: Section['questions'][number]): boolean => {
+    const crm = answers['current_crm'] as string | undefined;
+    if (crm === 'no_crm') {
+      if (q.id === 'nps' || q.id === 'licenses_count' || q.id === 'time_spent') return true;
+    }
+    return false;
+  }, [answers]);
+
+  // examples fetched via /api/ai/examples and shown via tooltip; no local hardcoded strings
 
   function computeProgressPercent() {
     // Count total prompts across all sections (questions + rating items)
@@ -60,27 +72,28 @@ export default function SurveyPage() {
     return Math.min(100, Math.max(0, Math.round((visited / total) * 100)));
   }
 
-  function getTopMetricsHint(roleId?: string): string {
+  function getTopMetricsHint(): string {
     // Fetch from LLM examples endpoint synchronously is not possible here; provide cached string if already fetched via state (set elsewhere)
     return examplesByQuestionId['top_metrics']?.join('; ') || 'Loading examples…';
   }
 
+  const role = answers['primary_role'] as string | undefined;
+  const hasTopExamples = !!examplesByQuestionId['top_metrics'];
   useEffect(() => {
     async function ensureExamples() {
-      if (!examplesByQuestionId['top_metrics']) {
-        try {
-          const res = await fetch('/api/ai/examples', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ questionId: 'top_metrics', roleId: answers['primary_role'] as string | undefined }),
-          });
-          const data = await res.json();
-          setExamplesByQuestionId(prev => ({ ...prev, top_metrics: data.examples || [] }));
-        } catch {}
-      }
+      if (hasTopExamples) return;
+      try {
+        const res = await fetch('/api/ai/examples', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ questionId: 'top_metrics', roleId: role }),
+        });
+        const data = await res.json();
+        setExamplesByQuestionId(prev => ({ ...prev, top_metrics: data.examples || [] }));
+      } catch {}
     }
     ensureExamples();
-  }, [answers['primary_role']]);
+  }, [role, hasTopExamples]);
 
   useEffect(() => {
     // Fetch short descriptions for manual tasks options
@@ -122,6 +135,29 @@ export default function SurveyPage() {
     }
     ensureDescriptions();
   }, [sections, descriptionsByQuestionId]);
+
+  // Auto-skip ineligible questions based on answers (e.g., no CRM)
+  useEffect(() => {
+    const sectionLocal = sections[activeSectionIndex] as Section | RatingGroupSection;
+    if (!('questions' in sectionLocal)) return;
+    const section = sectionLocal as Section;
+    let idx = activeQuestionIndex;
+    while (section.questions[idx] && shouldSkipQuestion(section.questions[idx])) {
+      idx++;
+    }
+    if (idx !== activeQuestionIndex) {
+      if (idx < section.questions.length) {
+        setActiveQuestionIndex(idx);
+      } else {
+        const isLastSection = activeSectionIndex >= sections.length - 1;
+        if (!isLastSection) {
+          setActiveSectionIndex(i => Math.min(sections.length - 1, i + 1));
+          setActiveQuestionIndex(0);
+          setRatingPage(0);
+        }
+      }
+    }
+  }, [sections, activeSectionIndex, activeQuestionIndex, answers, shouldSkipQuestion]);
 
   function getContextPrefix(q: Section['questions'][number]): string | undefined {
     const nps = answers['nps'] as number | undefined;
@@ -170,6 +206,29 @@ export default function SurveyPage() {
     localStorage.setItem('survey-progress', JSON.stringify(state));
   }, [name, email, company, answers, ratings, activeSectionIndex, activeQuestionIndex, ratingPage, showIntro]);
 
+  // Telemetry helpers
+  const sessionId = useMemo(() => {
+    if (typeof window === 'undefined') return '';
+    let id = localStorage.getItem('survey-session-id');
+    if (!id) {
+      id = Math.random().toString(36).slice(2);
+      localStorage.setItem('survey-session-id', id);
+      // fire session_start
+      fetch('/api/telemetry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: id, event: 'session_start', name, email }) }).catch(()=>{});
+    }
+    return id;
+  }, [name, email]);
+
+  const viewStartRef = useRef<number>(Date.now());
+  useEffect(() => {
+    viewStartRef.current = Date.now();
+    const section = sections[activeSectionIndex] as Section | RatingGroupSection;
+    if ('questions' in section) {
+      const q = (section as Section).questions[activeQuestionIndex];
+      fetch('/api/telemetry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, event: 'question_view', sectionId: (section as unknown as { id: string }).id, questionId: q?.id, stepIndex: activeQuestionIndex }) }).catch(()=>{});
+    }
+  }, [sections, activeSectionIndex, activeQuestionIndex, sessionId]);
+
   const activeSection = sections[activeSectionIndex];
   const totalSections = sections.length;
 
@@ -177,23 +236,19 @@ export default function SurveyPage() {
     setAnswers(prev => ({ ...prev, [id]: value }));
   }
 
-  async function onBlurSummarize(id: string, text: string) {
-    if (!text || text.trim().length < 5) return;
-    try {
-      const res = await fetch('/api/surveys/gist', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      });
-      const data = await res.json();
-      setGists(prev => ({ ...prev, [id]: data }));
-    } catch {}
-  }
+  // gist summarization removed from UI
 
   function getOptionLabel(section: Section['questions'][number], id: string | undefined): string | undefined {
     if (!id) return undefined;
     const opt = (section.options || []).find(o => o.id === id);
     return opt?.label;
+  }
+
+  function goTo(nextS: number, nextQ: number, nextR: number) {
+    setNavHistory(prev => [...prev, { s: activeSectionIndex, q: activeQuestionIndex, r: ratingPage }]);
+    setActiveSectionIndex(nextS);
+    setActiveQuestionIndex(nextQ);
+    setRatingPage(nextR);
   }
 
   function buildAck(q: Section['questions'][number], value: unknown): string {
@@ -226,16 +281,7 @@ export default function SurveyPage() {
       return true;
     }
 
-    // Allow explicit skip phrases
-    const SKIP_PHRASES = ['skip', 'no comment', "don't know", 'na', 'n/a'];
-    if ((q.type === 'text' || q.type === 'long_text') && typeof val === 'string') {
-      const lower = val.trim().toLowerCase();
-      if (SKIP_PHRASES.includes(lower)) {
-        setErrorsByQuestionId(prev => ({ ...prev, [q.id]: [] }));
-        setAckText('No problem — we can skip this one.');
-        return true;
-      }
-    }
+    // Skip intent is now LLM-detected (confirm on second Next)
 
     // Required checks (still required to select something for choice/scale)
     if (q.required) {
@@ -252,43 +298,40 @@ export default function SurveyPage() {
       }
     }
 
-    // Lenient open-text checks
+    // Open-text checks: allow explicit skip phrases and then defer to LLM
     if (q.type === 'text' || q.type === 'long_text') {
       const text = typeof val === 'string' ? val : '';
-      const trimmed = text.trim();
-      const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
-      const looksGibberish = /^(?:[a-z]{1,2}\s*){1,6}$/i.test(trimmed);
-      const isEmpty = trimmed.length === 0;
-      // Allow relevant one-word like “Leads” to pass; block empty/gibberish only
-      if (isEmpty || looksGibberish) {
-        setErrorsByQuestionId(prev => ({
-          ...prev,
-          [q.id]: ['This seems too brief to act on. A couple of details (what/where/impact) would help. You can also type "skip" to move on.'],
-        }));
-        return false;
-      }
-      if (q.id === 'top_metrics') {
-        const parts = trimmed.split(/[;,\n,]/).map(s => s.trim()).filter(Boolean);
-        if (parts.length < 2) {
-          if (warnedOnceByQuestionId[q.id]) {
-            return true;
-          }
-          setErrorsByQuestionId(prev => ({
-            ...prev,
-            [q.id]: ['Tip: add one more item (comma/semicolon/newline). If not handy, press Next again to continue.'],
-          }));
-          setWarnedOnceByQuestionId(prev => ({ ...prev, [q.id]: true }));
-          return false;
+      const lower = text.trim().toLowerCase();
+      const skipSyn = /^(?:skip|na|n\/a|none|nothing|no\s*comment|not\s*applicable|don'?t\s*know)$/i.test(lower);
+      if (skipSyn) {
+        if (warnedOnceByQuestionId[q.id]) {
+          setErrorsByQuestionId(prev => ({ ...prev, [q.id]: [] }));
+          setAckText('No problem — we can skip this one.');
+          return true;
         }
+        setErrorsByQuestionId(prev => ({ ...prev, [q.id]: ['If you prefer to skip this question, press Next again to confirm.'] }));
+        setWarnedOnceByQuestionId(prev => ({ ...prev, [q.id]: true }));
+        return false;
       }
       try {
         const res = await fetch('/api/ai/validate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fieldId: q.id, text }),
+          body: JSON.stringify({ fieldId: q.id, text, question: q.label, roleId: (answers['primary_role'] as string) || undefined }),
         });
         const data = await res.json();
-        if (!data.ok) {
+        const friendly: string | undefined = data.friendly;
+        if (data.wantsSkip) {
+          if (warnedOnceByQuestionId[q.id]) {
+            // confirm skip on second Next
+            setAckText('No problem — we can skip this one.');
+            return true;
+          }
+          setErrorsByQuestionId(prev => ({ ...prev, [q.id]: [friendly || 'If you prefer to skip this question, type "skip" or press Next again to confirm.'] }));
+          setWarnedOnceByQuestionId(prev => ({ ...prev, [q.id]: true }));
+          return false;
+        }
+        if (data.wantsMore || !data.ok) {
           try {
             const f = await fetch('/api/ai/followup', {
               method: 'POST',
@@ -296,12 +339,13 @@ export default function SurveyPage() {
               body: JSON.stringify({ question: q.label, answer: text }),
             });
             const fj = await f.json();
-            setErrorsByQuestionId(prev => ({ ...prev, [q.id]: [...(prev[q.id] || []), `Suggestion: ${fj.followup}`] }));
+            const msgs = [friendly || undefined, `Suggestion: ${fj.followup}`].filter(Boolean) as string[];
+            setErrorsByQuestionId(prev => ({ ...prev, [q.id]: msgs }));
           } catch {}
           if (warnedOnceByQuestionId[q.id]) {
             return true;
           }
-          setErrorsByQuestionId(prev => ({ ...prev, [q.id]: data.reasons || ['Consider adding one more sentence with a concrete example. You can also press Next again to continue.'] }));
+          setErrorsByQuestionId(prev => ({ ...prev, [q.id]: [friendly || ''] }));
           setWarnedOnceByQuestionId(prev => ({ ...prev, [q.id]: true }));
           return false;
         }
@@ -312,7 +356,30 @@ export default function SurveyPage() {
     return true;
   }
 
+  function skipCurrentQuestion() {
+    if (!('questions' in activeSection)) return;
+    const q = (activeSection as Section).questions[activeQuestionIndex];
+    if (!(q.type === 'text' || q.type === 'long_text')) return;
+    setWarnedOnceByQuestionId(prev => ({ ...prev, [q.id]: true }));
+    setErrorsByQuestionId(prev => ({ ...prev, [q.id]: [] }));
+    setAckText('No problem — we can skip this one.');
+    // advance like successful validation
+    const isLastSection = activeSectionIndex >= totalSections - 1;
+    const moreQuestions = activeQuestionIndex < (activeSection as Section).questions.length - 1;
+    if (moreQuestions) {
+      goTo(activeSectionIndex, activeQuestionIndex + 1, ratingPage);
+      return;
+    }
+    if (isLastSection) {
+      void handleSubmit();
+      return;
+    }
+    goTo(Math.min(totalSections - 1, activeSectionIndex + 1), 0, 0);
+  }
+
   async function handleNext() {
+    if (isAdvancing || submitStatus === 'saving') return;
+    setIsAdvancing(true);
     const isRatings = 'type' in activeSection && (activeSection as RatingGroupSection).type === 'rating_group';
     const isQuestions = 'questions' in activeSection;
     const isLastSection = activeSectionIndex >= totalSections - 1;
@@ -322,17 +389,18 @@ export default function SurveyPage() {
       const rg = activeSection as RatingGroupSection;
       const totalPages = Math.ceil(rg.items.length / 5);
       if (ratingPage < totalPages - 1) {
-        setRatingPage(p => p + 1);
+        goTo(activeSectionIndex, activeQuestionIndex, ratingPage + 1);
+        setIsAdvancing(false);
         return;
       }
       // advance to next section
       if (isLastSection) {
         await handleSubmit();
+        setIsAdvancing(false);
         return;
       } else {
-        setActiveSectionIndex(i => Math.min(totalSections - 1, i + 1));
-        setActiveQuestionIndex(0);
-        setRatingPage(0);
+        goTo(Math.min(totalSections - 1, activeSectionIndex + 1), 0, 0);
+        setIsAdvancing(false);
         return;
       }
     }
@@ -341,32 +409,38 @@ export default function SurveyPage() {
     if (isQuestions && (activeSection as { id: string }).id === 'invisible_crm') {
       if (isLastSection) {
         await handleSubmit();
+        setIsAdvancing(false);
         return;
       } else {
-        setActiveSectionIndex(i => Math.min(totalSections - 1, i + 1));
-        setActiveQuestionIndex(0);
-        setRatingPage(0);
+        goTo(Math.min(totalSections - 1, activeSectionIndex + 1), 0, 0);
+        setIsAdvancing(false);
         return;
       }
     }
 
     // question progression with validation
     if (isQuestions) {
+      const startMs = viewStartRef.current || Date.now();
       const ok = await validateCurrentQuestion();
-      if (!ok) return;
+      if (!ok) { setIsAdvancing(false); return; }
       const moreQuestions = activeQuestionIndex < (activeSection as Section).questions.length - 1;
       if (moreQuestions) {
-        setActiveQuestionIndex(i => i + 1);
+        const section = activeSection as Section;
+        const q = section.questions[activeQuestionIndex];
+        const dwellMs = Date.now() - startMs;
+        fetch('/api/telemetry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, event: 'question_next', sectionId: (activeSection as unknown as { id: string }).id, questionId: q?.id, stepIndex: activeQuestionIndex, msFromStart: dwellMs, extra: { dwellMs } }) }).catch(()=>{});
+        goTo(activeSectionIndex, activeQuestionIndex + 1, ratingPage);
+        setIsAdvancing(false);
         return;
       }
       // move to next section
       if (isLastSection) {
         await handleSubmit();
+        setIsAdvancing(false);
         return;
       } else {
-        setActiveSectionIndex(i => Math.min(totalSections - 1, i + 1));
-        setActiveQuestionIndex(0);
-        setRatingPage(0);
+        goTo(Math.min(totalSections - 1, activeSectionIndex + 1), 0, 0);
+        setIsAdvancing(false);
         return;
       }
     }
@@ -552,11 +626,11 @@ export default function SurveyPage() {
                   return (
                     <div>
                       <div className="font-medium flex items-center gap-2 relative">
-                        <span title={q.id === 'top_metrics' ? getTopMetricsHint(answers['primary_role'] as string | undefined) : undefined}>{q.label}</span>
+                        <span title={q.id === 'top_metrics' ? getTopMetricsHint() : undefined}>{q.label}</span>
                         {(q.hint || q.id === 'top_metrics') ? (
                           <span
                             className="h-5 w-5 inline-flex items-center justify-center rounded-full border text-xs bg-white text-gray-700 cursor-help select-none"
-                            onMouseEnter={() => setHoverTip({ id: q.id, text: q.id === 'top_metrics' ? getTopMetricsHint(answers['primary_role'] as string | undefined) : (q.hint as string) })}
+                            onMouseEnter={() => setHoverTip({ id: q.id, text: q.id === 'top_metrics' ? getTopMetricsHint() : (q.hint as string) })}
                             onMouseLeave={() => setHoverTip(t => (t?.id === q.id ? null : t))}
                           >
                             i
@@ -578,16 +652,16 @@ export default function SurveyPage() {
                         <p className="text-sm text-gray-600 mt-1">{q.explanation}</p>
                       )}
                       {errorsByQuestionId[q.id] && errorsByQuestionId[q.id].length > 0 && (
-                        <div className="mt-2 text-xs text-red-600">
+                        <div className="mt-2 text-xs text-gray-700 border rounded p-2 bg-gray-50">
                           {errorsByQuestionId[q.id].map((e, idx) => (
-                            <div key={idx}>• {e}</div>
+                            <div key={idx}>Suggestion: {e}</div>
                           ))}
                         </div>
                       )}
                       {(q.hint || q.id === 'top_metrics') && errorsByQuestionId[q.id] && errorsByQuestionId[q.id].length > 0 && (
                         <div className="mt-2 text-xs text-gray-700 border rounded p-2 bg-gray-50">
                           <div className="font-medium mb-1">Sample:</div>
-                          <div>{q.id === 'top_metrics' ? getTopMetricsHint(answers['primary_role'] as string | undefined) : q.hint}</div>
+                          <div>{q.id === 'top_metrics' ? getTopMetricsHint() : q.hint}</div>
                           {q.id === 'top_metrics' && examplesByQuestionId['top_metrics'] && (
                             <ul className="mt-1 list-disc ml-4">
                               {examplesByQuestionId['top_metrics'].map((ex, i) => (
@@ -644,7 +718,6 @@ export default function SurveyPage() {
                           className="mt-2 border rounded px-3 py-2 w-full"
                           value={(answers[q.id] as string) || ''}
                           onChange={e => setAnswer(q.id, e.target.value)}
-                          onBlur={e => onBlurSummarize(q.id, e.target.value)}
                         />
                       )}
                       {q.type === 'multi_select' && (
@@ -676,16 +749,9 @@ export default function SurveyPage() {
                           rows={4}
                           value={(answers[q.id] as string) || ''}
                           onChange={e => setAnswer(q.id, e.target.value)}
-                          onBlur={e => onBlurSummarize(q.id, e.target.value)}
                         />
                       )}
-                      {gists[q.id]?.gist && (
-                        <div className="mt-2 text-sm text-gray-700">
-                          <div className="font-medium">Gist:</div>
-                          <div>{gists[q.id].gist}</div>
-                          <div className="text-gray-500 mt-1">{gists[q.id].hint}</div>
-                        </div>
-                      )}
+                      {/* Gist is generated for internal use but not shown in the UI */}
                     </div>
                   );
                 })()}
@@ -696,6 +762,25 @@ export default function SurveyPage() {
             <button
               className="px-4 py-2 rounded border text-gray-600"
               onClick={() => {
+                if (navHistory.length > 0) {
+                  const hist = [...navHistory];
+                  let last = hist.pop()!;
+                  // Skip over skippable questions when going back
+                  while (last) {
+                    const sec = sections[last.s];
+                    if ('questions' in sec && sec.questions[last.q] && shouldSkipQuestion(sec.questions[last.q])) {
+                      if (hist.length === 0) break;
+                      last = hist.pop()!;
+                      continue;
+                    }
+                    break;
+                  }
+                  setNavHistory(hist);
+                  setActiveSectionIndex(last.s);
+                  setActiveQuestionIndex(last.q);
+                  setRatingPage(last.r);
+                  return;
+                }
                 if ('type' in activeSection && (activeSection as RatingGroupSection).type === 'rating_group') {
                   if (ratingPage > 0) {
                     setRatingPage(p => p - 1);
@@ -710,8 +795,13 @@ export default function SurveyPage() {
                   return;
                 }
                 if ('questions' in activeSection && activeQuestionIndex > 0) {
-                  setActiveQuestionIndex(i => i - 1);
-                  return;
+                  const sec = activeSection as Section;
+                  let prevIdx = activeQuestionIndex - 1;
+                  while (prevIdx >= 0 && shouldSkipQuestion(sec.questions[prevIdx])) prevIdx--;
+                  if (prevIdx >= 0) {
+                    setActiveQuestionIndex(prevIdx);
+                    return;
+                  }
                 }
                 if (activeSectionIndex === 0) {
                   setShowIntro(true);
@@ -724,20 +814,33 @@ export default function SurveyPage() {
               Back
             </button>
             {(() => {
-              const isRatings = 'type' in activeSection && (activeSection as RatingGroupSection).type === 'rating_group';
               const isQuestions = 'questions' in activeSection;
               const moreRatings = false; // handled in handleNext
               const moreQuestions = isQuestions && activeQuestionIndex < (activeSection as Section).questions.length - 1;
               const isLastSection = activeSectionIndex >= totalSections - 1;
               return (
                 <div className="flex items-center gap-3">
+                  {(() => {
+                    if (!isQuestions) return null;
+                    const q = (activeSection as Section).questions[activeQuestionIndex];
+                    if (q && (q.type === 'text' || q.type === 'long_text')) {
+                      return (
+                        <button className="px-3 py-2 rounded border text-gray-600" type="button" onClick={skipCurrentQuestion}>
+                          Skip
+                        </button>
+                      );
+                    }
+                    return null;
+                  })()}
                   <button
                     className="px-4 py-2 rounded bg-black text-white shadow disabled:opacity-60"
                     onClick={moreRatings || moreQuestions || !isLastSection ? handleNext : handleSubmit}
                     type="button"
-                    disabled={submitStatus === 'saving'}
+                    disabled={submitStatus === 'saving' || isAdvancing}
                   >
-                    {moreRatings || moreQuestions || !isLastSection ? 'Next' : submitStatus === 'saving' ? 'Submitting…' : 'Submit'}
+                    {moreRatings || moreQuestions || !isLastSection
+                      ? (isAdvancing ? 'Checking…' : 'Next')
+                      : submitStatus === 'saving' ? 'Submitting…' : 'Submit'}
                   </button>
                   {submitStatus === 'error' && (
                     <span className="text-sm text-red-600">Couldn’t submit. Please try again.</span>

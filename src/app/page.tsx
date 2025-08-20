@@ -13,7 +13,7 @@ export default function Home() {
           Help us understand what works and what gets in your way so we can build a CRM experience you’ll love.
         </p>
         <div className="mt-6 grid gap-3 text-left text-gray-700">
-          <div>• Time to complete: ~5–7 minutes</div>
+          <div>• Time to complete: ~15 minutes</div>
           <div>• What you’ll get: a summary of your top pain points and prioritized suggestions for improvement</div>
           <div>• How we use your answers: to identify the biggest friction and opportunities for Aether’s next releases</div>
         </div>
@@ -22,7 +22,7 @@ export default function Home() {
             Start the survey
           </Link>
         </div>
-      </div>
-    </main>
+        </div>
+      </main>
   );
 }

@@ -9,7 +9,7 @@ async function followupWithGoogle(question: string, answer: string) {
   const key = process.env.GOOGLE_FLASH_API_KEY;
   if (!key) return null;
   try {
-    const prompt = `You are a helpful research assistant. Given a survey question and a short or vague answer, suggest ONE short follow-up question (max 18 words) that would make the answer more specific and useful. Reply ONLY the question text.
+    const prompt = `You are a kind survey coach. Suggest ONE short follow-up question (max 18 words) that would help the user add one specific, practical detail. Do not demand numbers unless the question explicitly asks for metrics with quantities. Keep a friendly, non-judgmental tone. Reply ONLY the question text.
 Question: ${question}
 Answer: ${answer}`;
     const res = await fetch(
@@ -41,7 +41,7 @@ async function followupWithOpenRouter(question: string, answer: string) {
       body: JSON.stringify({
         model: 'openai/gpt-4o-mini',
         messages: [
-          { role: 'system', content: 'Suggest ONE short follow-up question (<=18 words) to improve the user\'s answer. Reply only the question.' },
+          { role: 'system', content: 'You are a kind survey coach. Suggest ONE short follow-up question (<=18 words) that elicits one practical detail. Do not ask for numbers unless explicitly requested in the original question. Reply only the question.' },
           { role: 'user', content: `Question: ${question}\nAnswer: ${answer}` },
         ],
         temperature: 0.3,
@@ -59,7 +59,7 @@ export async function POST(req: Request) {
   const { question, answer } = (await req.json()) as Body;
   let followup = await followupWithGoogle(question, answer);
   if (!followup) followup = await followupWithOpenRouter(question, answer);
-  if (!followup) followup = 'Could you share a concrete example or numbers to make this clearer?';
+  if (!followup) followup = 'Could you share one concrete example to make this clearer?';
   return NextResponse.json({ followup });
 }
 

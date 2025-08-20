@@ -56,7 +56,12 @@ export default function ResponsesPage() {
     <main className="max-w-5xl mx-auto p-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Responses</h1>
-        <button className="px-3 py-2 border rounded" onClick={downloadCSV}>Export CSV</button>
+        <div className="flex gap-2">
+          <a className="px-3 py-2 border rounded" href="/admin/aggregate">Aggregate</a>
+          <a className="px-3 py-2 border rounded" href="/admin/individual">Individual</a>
+          <a className="px-3 py-2 border rounded" href="/admin/analytics">Analytics</a>
+          <button className="px-3 py-2 border rounded" onClick={downloadCSV}>Export CSV</button>
+        </div>
       </div>
       <div className="mt-4 overflow-auto">
         <table className="min-w-full text-sm">

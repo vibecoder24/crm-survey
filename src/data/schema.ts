@@ -70,7 +70,6 @@ export const surveySchema: SurveySchema = {
       objective: 'Capture your role and context to interpret responses correctly.',
       victoryCopy: 'Great context—this helps us tailor insights.',
       questions: [
-        { id: 'nps', type: 'scale', label: 'How happy are you with your current CRM?', scaleMin: 0, scaleMax: 10, required: true },
         {
           id: 'current_crm',
           type: 'multiple_choice',
@@ -82,10 +81,12 @@ export const surveySchema: SurveySchema = {
             { id: 'zoho', label: 'Zoho' },
             { id: 'monday', label: 'monday.com' },
             { id: 'fresh', label: 'Freshsales' },
+            { id: 'no_crm', label: "I don't use a CRM" },
             { id: 'other', label: 'Other (specify)' },
           ],
           required: true,
         },
+        { id: 'nps', type: 'scale', label: 'How happy are you with your current CRM?', scaleMin: 0, scaleMax: 10, required: true },
         {
           id: 'primary_role',
           type: 'multiple_choice',
@@ -119,8 +120,8 @@ export const surveySchema: SurveySchema = {
     },
     {
       id: 'daily_routine',
-      title: 'Your Daily HubSpot Routine',
-      objective: 'Understand time spent, key metrics tracked, and first actions each day.',
+      title: 'Your Daily Workflow (CRM or not)',
+      objective: 'Understand time spent in your tools (CRM or spreadsheets), key metrics tracked, and first actions each day.',
       victoryCopy: 'Daily rhythm captured—on to what you value most.',
       questions: [
         {
